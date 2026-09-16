@@ -13,6 +13,9 @@ import tempfile
 import time
 
 PACKET = struct.Struct('<IIQ')
+# Independent IDA 8.5 constants (confirmed against ida_idd), keyed by the
+# sequential names used internally by this test. Do not derive these from C++.
+LEGACY_EVENTS = (0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)
 EVENT_SIZE = 1065  # packed protocol 9: 21-byte header + 1044-byte module union
 
 
@@ -34,8 +37,9 @@ def run(args, version):
         with open(Path(tmp) / 'tool.log', 'w+') as log:
             proc = subprocess.Popen([str(Path(args.pin).resolve()), '-t',
                                      str(Path(args.tool).resolve()), '-p', str(port),
-                                     '-T', '5', '-idadbg', '1', '--',
-                                     str(Path(args.app).resolve())],
+                                     '-T', '5', '-idadbg', '1',
+                                     *(['-event_ids', args.event_ids] if args.event_ids else []),
+                                     '--', str(Path(args.app).resolve())],
                                     cwd=tmp, stdout=log, stderr=log)
             try:
                 deadline = time.monotonic() + 15
@@ -68,8 +72,13 @@ def run(args, version):
                                 continue
                             assert code == 5, ('unexpected packet', code, size, data)
                             event = receive(sock, EVENT_SIZE)
-                            eid, pid, tid = struct.unpack_from('<III', event)
-                            assert eid == size, (eid, size)
+                            wire_eid, pid, tid = struct.unpack_from('<III', event)
+                            assert wire_eid == size, (wire_eid, size)
+                            if args.event_ids == 'modern':
+                                eid = wire_eid
+                            else:
+                                assert wire_eid in LEGACY_EVENTS, ('invalid IDA 8.5 event', wire_eid)
+                                eid = LEGACY_EVENTS.index(wire_eid)
                             assert eid != 7, ('application exception', event[21:40])
                             seen.append(eid)
                             if eid == 1:
@@ -88,7 +97,7 @@ def run(args, version):
                                 trace = receive(sock, 208008)
                                 assert struct.unpack_from('<II', trace) == (0, 0)
                                 assert not any(trace[8:]), 'unused trace bytes must be initialized'
-                            sock.sendall(PACKET.pack(14, 0, eid))  # RESUME
+                            sock.sendall(PACKET.pack(14, 0, wire_eid))  # RESUME
                             pending_resumes += 1
                             if eid == 2:
                                 assert struct.unpack_from('<i', event, 21)[0] == 0
@@ -115,6 +124,8 @@ def main():
     parser.add_argument('--pin', required=True)
     parser.add_argument('--tool', required=True)
     parser.add_argument('--app', default='/bin/true')
+    parser.add_argument('--event-ids', choices=('legacy', 'modern'),
+                        help='Omit to verify the default IDA 8.5-compatible mode')
     parser.add_argument('--bits', type=int, choices=(32, 64), default=64)
     args = parser.parse_args()
     run(args, 1)

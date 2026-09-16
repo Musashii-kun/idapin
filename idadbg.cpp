@@ -42,6 +42,9 @@
 
 #include "idadbg.h"
 #include "idadbg_local.h"
+#include "idadbg_event_ids.h"
+
+static_assert(TRACE_FULL == IDAPIN_LAST_EVENT, "Update event wire mapping");
 #include <time.h>
 
 //--------------------------------------------------------------------------
@@ -111,6 +114,16 @@ KNOB<int> knob_ida_port(
         "p",
         "23946",
         "Port where IDA Pro is listening for incoming PIN tool's connections");
+
+KNOB<std::string> knob_event_ids(
+        KNOB_MODE_WRITEONCE,
+        "pintool",
+        "event_ids",
+        "legacy",
+        "IDA event numbering: legacy (IDA 8.5 bit values) or modern (sequential)");
+
+// Set once before accepting connections; both schemes use protocol version 9.
+static bool legacy_event_ids = true;
 
 KNOB<int> knob_connect_timeout(
         KNOB_MODE_WRITEONCE,
@@ -2938,6 +2951,19 @@ static bool read_handle_packet(idapin_packet_t *res)
     exit_process(0);
   }
 
+  // Normalize RESUME before either the dispatcher or handle_packets sees it.
+  // The latter also compares the resumed event to PROCESS_STARTED, etc.
+  if ( res->code == PTT_RESUME )
+  {
+    uint32 event;
+    if ( !idapin_event_from_wire(res->data, legacy_event_ids, &event) )
+    {
+      MSG("Invalid RESUME event ID %llu for selected event numbering\n", res->data);
+      return false;
+    }
+    res->data = event;
+  }
+
   if ( !handle_packet(res) )
   {
     MSG("Error handling %s packet, exiting...\n", last_packet);
@@ -3045,6 +3071,14 @@ int main(int argc, char * argv[])
     return usage();
   }
 
+  const std::string event_ids = knob_event_ids.Value();
+  if ( event_ids != "legacy" && event_ids != "modern" )
+  {
+    fprintf(stderr, "idapin: -event_ids must be legacy or modern\n");
+    return usage();
+  }
+  legacy_event_ids = event_ids == "legacy";
+
   int value = knob_debug_mode.Value();
   if ( value <= 0 )
   {
@@ -3060,6 +3094,7 @@ int main(int argc, char * argv[])
   }
 
   DEBUG(2, "IDA PIN Tool started (debug level=%d)\n", debug_level);
+  MSG("IDA event numbering: %s\n", event_ids.c_str());
   // Connect to IDA's debugger; it only returns in case of error
   if ( !listen_to_ida() )
   {
@@ -3899,11 +3934,15 @@ bool ev_queue_t::send_event(bool *can_resume)
     if ( evt.debev.eid != NO_EVENT )
     {
       static int pktno = 1;
+      // Convert a copy, preserving internal queue/resume event IDs.
+      pin_debug_event_t wire_event = evt.debev;
+      if ( !idapin_event_to_wire(evt.debev.eid, legacy_event_ids, &wire_event.eid) )
+        return false;
       idapin_packet_t pkt(PTT_DEBUG_EVENT);
-      pkt.size = evt.debev.eid;
+      pkt.size = wire_event.eid;
       pkt.data = pktno++;
       if ( !pin_send(&pkt, sizeof(idapin_packet_t), __FUNCTION__)
-        || !pin_send(&evt.debev, sizeof(evt.debev), __FUNCTION__) )
+        || !pin_send(&wire_event, sizeof(wire_event), __FUNCTION__) )
         break;
       DEBUG(2, "PACKET %d: sent event: %x (ea=%p, tid=%d/%d)\n", int(pkt.data),
             evt.debev.eid, pvoid(evt.debev.ea), evt.tid_local, evt.debev.tid);

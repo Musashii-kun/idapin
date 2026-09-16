@@ -77,10 +77,22 @@ On Windows use pin.exe and the corresponding .dll. For IA-32 use idadbg.so
 or idadbg.dll. The tool listens for an IDA client; a plain launch waits for
 that connection. -idadbg 1 enables diagnostic output.
 
+IDA client compatibility:
+  -event_ids legacy  Default. Bit-valued events used by IDA 8.5 and older.
+  -event_ids modern  Sequential events used by the newer upstream idapin source.
+
+Both client generations advertise protocol version 9, so the HELLO version
+cannot select event numbering automatically. Match this option to the client.
+The tool normalizes events at the wire boundary, including RESUME replies.
+A mismatch can interpret a library load as thread exit, show a bogus exit code
+(such as 1920169263, the bytes "/usr"), and report UNKNOWN DEBUG EVENT 9.
+
 A Python 3 smoke client is provided; IDA itself is not required:
 
   python3 tests/smoke.py --pin "$PIN_ROOT/pin" --tool obj-intel64/idadbg64.so
 
+Use --event-ids modern to test sequential event clients; the smoke test
+uses legacy IDs and checks the default server mode unless explicitly selected.
 Use --bits 32 and the IA-32 tool for 32-bit testing. --app selects a different
 short-lived application that exits successfully (default /bin/true); on
 Windows supply an equivalent test .exe. The test checks rejection of old

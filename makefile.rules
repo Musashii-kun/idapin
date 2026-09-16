@@ -50,9 +50,9 @@ endif
 IDAPIN_LINKER = $(if $(TOOL_LINKER),$(TOOL_LINKER),$(LINKER))
 
 # Recompile when either header changes (not just relink).
-$(OBJDIR)idadbg$(OBJ_SUFFIX): idadbg.h idadbg_local.h
+$(OBJDIR)idadbg$(OBJ_SUFFIX): idadbg.h idadbg_local.h idadbg_event_ids.h
 
 # special rule for IDA's 64-bit DLLs (with non-suffixed object file name).
 # (copied form makefile.default.rules).
-$(OBJDIR)idadbg$(BITNESS)$(PINTOOL_SUFFIX): $(OBJDIR)idadbg$(OBJ_SUFFIX) idadbg.h idadbg_local.h
+$(OBJDIR)idadbg$(BITNESS)$(PINTOOL_SUFFIX): $(OBJDIR)idadbg$(OBJ_SUFFIX) idadbg.h idadbg_local.h idadbg_event_ids.h
 	$(IDAPIN_LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $< $(TOOL_LPATHS) $(TOOL_LIBS)

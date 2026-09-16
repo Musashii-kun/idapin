@@ -45,7 +45,7 @@
     <Error Condition="'$(PinRoot)'!='' and !Exists('$(PinRoot)\source\tools\Config\makefile.win.config')" Text="PinRoot must identify a PIN kit with Windows build rules." />
   </Target>
   <ItemGroup><ClCompile Include="idadbg.cpp" /></ItemGroup>
-  <ItemGroup><ClInclude Include="idadbg.h" /><ClInclude Include="idadbg_local.h" /></ItemGroup>
+  <ItemGroup><ClInclude Include="idadbg.h" /><ClInclude Include="idadbg_local.h" /><ClInclude Include="idadbg_event_ids.h" /></ItemGroup>
   <ItemGroup><None Include="readme.txt" /><None Include="makefile" /><None Include="makefile.rules" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

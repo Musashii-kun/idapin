@@ -95,6 +95,36 @@ On Windows use pin.exe and the corresponding .dll. For IA-32 use idadbg.so
 or idadbg.dll. The tool listens for an IDA client; a plain launch waits for
 that connection. -idadbg 1 enables diagnostic output.
 
+IDA 8.5 working directory and diagnostic logs:
+Diagnostic output uses PIN's LOG API, whose default file is pintool.log in
+the working directory. An unwritable directory can prevent startup; IDA may
+show "Waiting for PIN to launch" followed by "Connection refused".
+
+To select a writable tool log without changing the application's working
+directory, open Debugger -> Process options -> Debugger specific options.
+In the additional arguments AFTER the PIN tool, enter the complete string:
+
+  -event_ids legacy -idadbg 1 -logfile /tmp/idapin.log
+
+These options select IDA 8.5 event numbering, enable diagnostic output, and
+set the tool log path. On the command line, put them after the tool name and
+before --. The /tmp path is for Linux; on Windows use an existing writable
+directory and quote the log path if it contains spaces.
+
+Alternatively, change the working directory before starting a debugging
+session. The PIN debugger's IDA 8.5 Process options dialog does not display
+a Directory field, but IDAPython can access it. Run this in IDA's Python
+console to preserve the other process options while changing that setting:
+
+  import ida_dbg
+  options = list(ida_dbg.get_process_options())
+  options[2] = "/tmp"
+  ida_dbg.set_process_options(*options)
+  print(ida_dbg.get_process_options()[2])
+
+On Windows, substitute an existing writable Windows directory. This changes
+the application's working directory too, which can affect relative paths.
+
 IDA client compatibility:
   -event_ids legacy  Default. Bit-valued events used by IDA 8.5 and older.
   -event_ids modern  Sequential events used by the newer upstream idapin source.

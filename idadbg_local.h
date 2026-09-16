@@ -33,9 +33,12 @@ namespace WINDOWS
 #undef timercmp
 #undef timerclear
 #define WIN32_LEAN_AND_MEAN
+#pragma warning(push)
+#pragma warning(disable: 5308)
 #include <Windows.h>
 #include <WinUser.h>
 #include <Ws2tcpip.h>
+#pragma warning(pop)
 };
 
 #endif
@@ -217,7 +220,6 @@ typedef WINDOWS::SOCKET SOCKET;
 #define sema_clear(sem)        SEMAFORE_CLEAR(sem)
 #define sema_set(sem)          SEMAFORE_SET(sem)
 #define wait_after_callback()  WAIT_AFTER_CALLBACK()
-//-V:DEBUG:547
 
 //--------------------------------------------------------------------------
 // tracebuf entry

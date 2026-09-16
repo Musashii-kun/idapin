@@ -35,9 +35,9 @@ ifdef IDA_OBJDIR
   $(OBJDIR):
 	@mkdir -p 2>/dev/null $(OBJDIR)
 
-  CC := $(IDA_CC)
-  CXX := $(IDA_CXX)
-  LINKER := $(IDA_CCL)
+  CC := "$(IDA_CC)"
+  CXX := "$(IDA_CXX)"
+  LINKER := "$(IDA_CCL)"
   TOOL_CXXFLAGS += $(IDA_EXTRA_CXXFLAGS)
   TOOL_LDFLAGS += $(IDA_EXTRA_LDFLAGS)
 endif
@@ -45,5 +45,5 @@ endif
 
 # special rule for IDA's 64-bit DLLs (with non-suffixed object file name).
 # (copied form makefile.default.rules).
-$(OBJDIR)idadbg$(BITNESS)$(PINTOOL_SUFFIX): $(OBJDIR)idadbg$(OBJ_SUFFIX)
+$(OBJDIR)idadbg$(BITNESS)$(PINTOOL_SUFFIX): $(OBJDIR)idadbg$(OBJ_SUFFIX) idadbg.h idadbg_local.h
 	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $< $(TOOL_LPATHS) $(TOOL_LIBS)

@@ -90,35 +90,35 @@ typedef          long long int64;
 // the replica of event_id_t declared in idd.hpp
 enum pin_event_id_t
 {
-  NO_EVENT         = 0x00000000, // Not an interesting event. This event can be
-                                 // used if the debugger module needs to return
-                                 // an event but there are no valid events.
-  PROCESS_STARTED  = 0x00000001, // New process has been started.
-  PROCESS_EXITED   = 0x00000002, // Process has been stopped.
-  THREAD_STARTED   = 0x00000004, // New thread has been started.
-  THREAD_EXITED    = 0x00000008, // Thread has been stopped.
-  BREAKPOINT       = 0x00000010, // Breakpoint has been reached. IDA will complain
-                                 // about unknown breakpoints, they should be reported
-                                 // as exceptions.
-  STEP             = 0x00000020, // One instruction has been executed. Spurious
-                                 // events of this kind are silently ignored by IDA.
-  EXCEPTION        = 0x00000040, // Exception.
-  LIB_LOADED       = 0x00000080, // New library has been loaded.
-  LIB_UNLOADED     = 0x00000100, // Library has been unloaded.
-  INFORMATION      = 0x00000200, // User-defined information.
-                                 // This event can be used to return empty information
-                                 // This will cause IDA to call get_debug_event()
-                                 // immediately once more.
-  PROCESS_ATTACHED = 0x00000400, // Successfully attached to running process.
-  PROCESS_DETACHED = 0x00000800, // Successfully detached from process.
-  PROCESS_SUSPENDED= 0x00001000, // Process has been suspended..
-                                 // This event can be used by the debugger module
-                                 // to signal if the process spontaneously gets
-                                 // suspended (not because of an exception,
-                                 // breakpoint, or single step). IDA will silently
-                                 // switch to the 'suspended process' mode without
-                                 // displaying any messages.
-  TRACE_FULL       = 0x00002000, // The trace being recorded is full.
+  NO_EVENT         =  0, // Not an interesting event. This event can be
+                         // used if the debugger module needs to return
+                         // an event but there are no valid events.
+  PROCESS_STARTED  =  1, // New process has been started.
+  PROCESS_EXITED   =  2, // Process has been stopped.
+  THREAD_STARTED   =  3, // New thread has been started.
+  THREAD_EXITED    =  4, // Thread has been stopped.
+  BREAKPOINT       =  5, // Breakpoint has been reached. IDA will complain
+                         // about unknown breakpoints, they should be reported
+                         // as exceptions.
+  STEP             =  6, // One instruction has been executed. Spurious
+                         // events of this kind are silently ignored by IDA.
+  EXCEPTION        =  7, // Exception.
+  LIB_LOADED       =  8, // New library has been loaded.
+  LIB_UNLOADED     =  9, // Library has been unloaded.
+  INFORMATION      = 10, // User-defined information.
+                         // This event can be used to return empty information
+                         // This will cause IDA to call get_debug_event()
+                         // immediately once more.
+  PROCESS_ATTACHED = 11, // Successfully attached to running process.
+  PROCESS_DETACHED = 12, // Successfully detached from process.
+  PROCESS_SUSPENDED= 13, // Process has been suspended..
+                         // This event can be used by the debugger module
+                         // to signal if the process spontaneously gets
+                         // suspended (not because of an exception,
+                         // breakpoint, or single step). IDA will silently
+                         // switch to the 'suspended process' mode without
+                         // displaying any messages.
+  TRACE_FULL = 14,       // The trace being recorded is full.
 };
 
 // Trace event types:
@@ -653,7 +653,7 @@ inline bool pin_classregs_t::init(pin_register_class_t cls, bool is_32bit)
   {
     case PIN_RC_GENERAL:
       firstnum = PINREG_FIRST_GPREG;
-      lastnum = is_32bit ? PINREG_LAST_REG32 : PINREG_LAST_GPREG;   //-V547 'is_32bit' is always true
+      lastnum = is_32bit ? PINREG_LAST_REG32 : PINREG_LAST_GPREG;
       break;
     case PIN_RC_SEGMENTS:
       firstnum = PINREG_FIRST_SEGREG;
@@ -665,11 +665,11 @@ inline bool pin_classregs_t::init(pin_register_class_t cls, bool is_32bit)
       break;
     case PIN_RC_XMM:
       firstnum = PINREG_FIRST_XMMREG;
-      lastnum = is_32bit ? PINREG_XMM7 : PINREG_LAST_XMMREG;    //-V547 'is_32bit' is always true
+      lastnum = is_32bit ? PINREG_XMM7 : PINREG_LAST_XMMREG;
       break;
     case PIN_RC_YMM:
       firstnum = PINREG_FIRST_YMMREG;
-      lastnum = is_32bit ? PINREG_YMM7 : PINREG_LAST_YMMREG;    //-V547 'is_32bit' is always true
+      lastnum = is_32bit ? PINREG_YMM7 : PINREG_LAST_YMMREG;
       break;
     default:
       return false;   // bad class

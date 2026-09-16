@@ -1,15 +1,24 @@
 /*
 
     IDA trace: PIN tool to communicate with IDA's debugger
-    Last supported linux version:   3.30-98830
-    Last supported windows version: 3.30-98830
+    Last supported linux version:   3.31-98861
+    Last supported windows version: 3.31-98861
 
 */
 
-#if defined(__NT__) && defined(__LINT__)
-//lint -e40 -e1055 -e64 -e92
+#if defined(_MSC_VER)
+#  if defined(__LINT__)
+     //lint -e40 -e1055 -e64 -e92
+#  endif
+#  pragma warning(push)
+#  pragma warning(disable: 5208) // unnamed class used in typedef name cannot
+                                 // declare members other than non-static data
+                                 // members, member enumerations, or member classes
 #endif
 #include <pin.H>
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 
 // PIN_PRODUCT_VERSION_MAJOR is not defined in pin-3.10
 #ifndef PIN_PRODUCT_VERSION_MAJOR
@@ -175,6 +184,7 @@ struct PINTOOL_REGISTER
     int bufsize = sizeof(buf);
     // dynamically allocate memory if the size exceeds sizeof(buf)
     byte = size <= bufsize ? buf : (UINT8 *)malloc(size);
+    memset(byte, 0, size);
   }
   ~PINTOOL_REGISTER()
   {
@@ -255,7 +265,6 @@ public:
   inline void set_finished() const;
   bool ctx_ok() const                  { return ctx != nullptr; }
   CONTEXT *get_ctx()                   { create_ctx(); return ctx; }  //lint !e1535 !e1536 exposes lower access member
-  bool is_phys_ctx() const             { return is_phys; }
   bool is_ctx_changed() const          { return ctx_changed; }
   bool is_ctx_valid() const            { return ctx_valid; }
   void discard_ctx()                   { ctx_valid = false; }
@@ -271,6 +280,7 @@ public:
   inline bool save_curr_thread_ctx(const CONTEXT *src_ctx);
   inline void save_ctx(const CONTEXT *src_ctx, bool can_change = true);
   inline void save_phys_ctx(const PHYSICAL_CONTEXT *phys_ctx);
+  inline void restore_phys_ctx(PHYSICAL_CONTEXT *phys_ctx);
   inline void set_ctx_reg(REG pinreg, ADDRINT regval);
   inline void export_ctx(idapin_registers_t *regs);
   inline bool change_regval(PINTOOL_REG regno, const UINT8 *regval);
@@ -284,6 +294,7 @@ public:
   static inline bool have_suspended_threads();
   static inline bool all_threads_suspended();
   void set_restart_ea(ADDRINT ea)      { restarted_at = ea; }
+  void set_restart_bits(int bits)      { state_bits |= bits; }
   inline void set_restart_ctx(const CONTEXT *context);
 
   static inline thread_data_t *get_thread_data();
@@ -335,7 +346,6 @@ private:
   bool susp;
   bool ev_handled;         // true if the last exception was hanlded by debugger
   bool started;
-  bool is_phys;
   bool is_stoppable;             // can be stopped by PIN_StopApplicationThreads
   static int thread_cnt;         // number of thread_data_t objects
   static int active_threads_cnt; // number of active threads
@@ -353,7 +363,6 @@ typedef std::deque<pin_local_event_t> event_list_t;
 
 //--------------------------------------------------------------------------
 // Event queue
-//-V:ev_queue_t:730 Not all members of a class are initialized inside the constructor: lock
 class ev_queue_t
 {
 public:
@@ -384,7 +393,6 @@ private:
 
 //--------------------------------------------------------------------------
 // Manager of breakpoints, pausing, stepping, thread susending
-//-V:bpt_mgr_t:730 Not all members of a class are initialized inside the constructor: bpt_lock
 class bpt_mgr_t
 {
 public:
@@ -1315,9 +1323,9 @@ static bool accept_conn()
   }
   // valid client: read the rest of 'hello' packed
   idapin_packet_t req;
-  memcpy((idapin_packet_v1_t *)&req, &req_v1, sizeof(idapin_packet_v1_t));    //-V512 underflow of the buffer '& req'
+  memcpy((idapin_packet_v1_t *)&req, &req_v1, sizeof(idapin_packet_v1_t));
   int rest = sizeof(idapin_packet_t) - sizeof(idapin_packet_v1_t);
-  if ( rest > 0 )   //-V547 'rest > 0' is always true
+  if ( rest > 0 )
   {
     char *ptr = (char *)&req + sizeof(idapin_packet_v1_t);
     if ( pin_recv(cli_socket, ptr, rest, "accept_conn") != rest )
@@ -1552,6 +1560,64 @@ static VOID app_start_cb(VOID *)
 }
 
 //--------------------------------------------------------------------------
+#ifndef _WIN32
+// Intercept signals before they are delivered. For signals without an
+// application handler (would be FATALSIGNAL), we report the exception to
+// IDA and let it decide. If IDA handles it, we suppress the signal and
+// apply the (possibly modified) context. This is needed because
+// context_change_cb cannot suppress fatal signals (ctxt_to is invalid
+// and PIN_ExecuteAt is not allowed from callbacks).
+// Linux only: PIN_InterceptSignal is not available on Windows.
+static BOOL intercept_signal_cb(
+        THREADID tid,
+        INT32 sig,
+        CONTEXT *ctxt,
+        BOOL hasHandler,
+        const EXCEPTION_INFO * /*pExceptInfo*/,
+        VOID *)
+{
+  if ( hasHandler )
+    return TRUE;  // app has a handler, let context_change_cb deal with it
+
+  thread_data_t *tdata = thread_data_t::get_thread_data(tid);
+  tdata->save_ctx(ctxt);
+
+  pin_local_event_t ev(EXCEPTION, tid);
+  pin_debug_event_t &event = ev.debev;
+  event.exc.code = sig;
+  event.ea = get_ctx_ip(ctxt);
+  event.exc.ea = event.ea;
+  event.exc.can_cont = true;
+  snprintf(event.exc.info, sizeof(event.exc.info),
+           "Fatal signal %d at %p", sig, pvoid(event.ea));
+  MSG("***Fatal signal %d at %p (intercepted)\n", sig, pvoid(event.ea));
+
+  tdata->set_excp_handled(false);
+  suspend_at_event(ev, true);
+  app_wait(&run_app_sem);
+
+  if ( tdata->excp_handled() )
+  {
+    MSG("Suppress fatal signal, apply modified context\n");
+    PIN_SaveContext(tdata->get_ctx(), ctxt);
+    // save back to clear ctx_changed, preventing continue_execution
+    // from calling PIN_ExecuteAt when the analysis routines fire
+    tdata->save_ctx(ctxt);
+    // prevent the breakpoint at the current IP from firing immediately.
+    // set both restart bits so that do_ctrl's continue_execution only
+    // clears RESTART_FROM_CTRL, keeping RESTART_FROM_BPT - this
+    // preserves restarted_at until do_bpt checks can_break().
+    tdata->set_restart_ea(get_ctx_ip(ctxt));
+    tdata->set_restart_bits(thread_data_t::RESTART_FROM_BPT
+                           | thread_data_t::RESTART_FROM_CTRL);
+    return FALSE;  // suppress signal
+  }
+  MSG("Pass fatal signal to the application\n");
+  return TRUE;  // deliver signal
+}
+#endif
+
+//--------------------------------------------------------------------------
 static VOID context_change_cb(
         THREADID tid,
         CONTEXT_CHANGE_REASON reason,
@@ -1566,7 +1632,7 @@ static VOID context_change_cb(
   thread_data_t *tdata = thread_data_t::get_thread_data(tid);
   if ( ctxt_from != nullptr )
   {
-    tdata->save_ctx(ctxt_from, false);
+    tdata->save_ctx(ctxt_from);
     event.ea = get_ctx_ip(ctxt_from);
   }
   event.exc.ea = event.ea;
@@ -1574,8 +1640,13 @@ static VOID context_change_cb(
   switch ( reason )
   {
     case CONTEXT_CHANGE_REASON_FATALSIGNAL:
+      // fatal signals without an app handler are intercepted by
+      // intercept_signal_cb, which can suppress them. If we get here,
+      // the signal was not suppressed (app has a handler, or the
+      // debugger chose not to handle it).
       event.exc.can_cont = false;
       snprintf(event.exc.info, sizeof(event.exc.info), "Fatal signal %d at %p", sig, pvoid(event.ea));
+      MSG("***Fatal signal %d at %p\n", sig, pvoid(event.ea));
       break;
     case CONTEXT_CHANGE_REASON_SIGNAL:
       snprintf(event.exc.info, sizeof(event.exc.info), "Signal %d at %p", sig, pvoid(event.ea));
@@ -1616,7 +1687,7 @@ static VOID context_change_cb(
     else
     {
       MSG("Mask exception\n");
-      PIN_SaveContext(ctxt_from, ctxt_to);
+      PIN_SaveContext(tdata->get_ctx(), ctxt_to);
     }
   }
   else
@@ -1639,6 +1710,7 @@ static EXCEPT_HANDLING_RESULT internal_excp_cb(
   event.exc.code = PIN_GetExceptionCode(ex_info);
   event.ea = ea_t(PIN_GetExceptionAddress(ex_info));
   event.exc.ea = event.ea;
+  event.exc.can_cont = true;
   string strinfo = PIN_ExceptionToString(ex_info);
   PIN_STR_TO_BUF(event.exc.info, strinfo);
   thread_data_t *tdata = thread_data_t::get_thread_data(tid);
@@ -1656,6 +1728,8 @@ static EXCEPT_HANDLING_RESULT internal_excp_cb(
   app_wait(&run_app_sem);
   if ( tdata->excp_handled() )
   {
+    // copy modified registers from private CONTEXT back to PHYSICAL_CONTEXT
+    tdata->restore_phys_ctx(ctxt);
     MSG("Continue execution after internal exception\n");
     return EHR_HANDLED;
   }
@@ -1815,6 +1889,18 @@ static void handle_start_process(void)
 #endif
   // Register aplication start callback
   PIN_AddApplicationStartFunction(app_start_cb, 0);
+
+#ifndef _WIN32
+  // Register signal intercept for common fatal signals.
+  // context_change_cb cannot suppress fatal signals (ctxt_to is invalid
+  // and PIN_ExecuteAt is not allowed from callbacks), so we intercept
+  // them here where we can modify ctxt and return FALSE to suppress.
+  // Linux only: PIN_InterceptSignal is not available on Windows.
+  PIN_InterceptSignal(SIGSEGV, intercept_signal_cb, 0);
+  PIN_InterceptSignal(SIGBUS, intercept_signal_cb, 0);
+  PIN_InterceptSignal(SIGFPE, intercept_signal_cb, 0);
+  PIN_InterceptSignal(SIGILL, intercept_signal_cb, 0);
+#endif
 
   // Register context change function
   PIN_AddContextChangeFunction(context_change_cb, 0);
@@ -2340,7 +2426,7 @@ static bool handle_read_regs(THREADID tid, int cls)
   if ( bufsize != 0 )
   {
     char *buf = get_io_buff(bufsize);
-    memset(buf, 0, bufsize);    //-V575 null pointer
+    memset(buf, 0, bufsize);
     regbuf.setbuf(buf);
     for ( int i = 0; i < regbuf.nclasses(); ++i )
     {
@@ -2489,14 +2575,30 @@ static bool do_resume(idapin_packet_t *ans, const idapin_packet_t &request)
     if ( pin_event_id_t(last_ev.eid) != eid )
       MSG("Unexpected resume: eid=%x (%x expected)\n", eid, int(last_ev.eid));
 
-    if ( eid == EXCEPTION )
+    if ( eid == EXCEPTION || last_ev.eid == EXCEPTION )
     {
-      // examine request.size field: should exception be passed to application?
+      // Determine if the exception should be suppressed.
+      // Normally eid==EXCEPTION and request.size carries the handled flag.
+      // However, during appcall cleanup IDA's call_app_func sets
+      // last_event.eid=NO_EVENT (debmod.cpp:776) and returns. IDA then
+      // resumes from the pre-appcall event (typically BREAKPOINT), so
+      // PTT_RESUME arrives with eid=BREAKPOINT, not EXCEPTION. We detect
+      // this via last_ev.eid==EXCEPTION and fall back to ctx_changed:
+      // we assume that if IDA wrote registers (restored the appcall
+      // context), it handled the exception even though it didn't say so
+      // explicitly.
       thread_data_t *tdata = thread_data_t::find_thread_data(tid_local);
       if ( tdata != nullptr )
-        tdata->set_excp_handled(request.size != 0);
+      {
+        bool set_handled = eid == EXCEPTION
+                         ? (request.size != 0)
+                         : tdata->is_ctx_changed();
+        tdata->set_excp_handled(set_handled);
+      }
       else
+      {
         MSG("RESUME error: can't find thread data for %d\n", tid_local);
+      }
     }
 
     if ( eid == THREAD_EXITED )
@@ -2900,7 +3002,7 @@ static void open_console(void)
 {
 #ifdef _WIN32
   if ( WINDOWS::AllocConsole() )
-  { //-V:freopen:530 The return value of function 'freopen' is required to be utilized
+  {
     // in 32bit mode PIN runtime doesn't handle correctly freopen("CONOUT$", ...
     // (redirects standard output to file "CONOUT$" instead of console)
     // so do not call freopen() for in case of 32bit here because it looks like
@@ -2978,7 +3080,7 @@ inline thread_data_t::thread_data_t()
   : ctx(nullptr), restarted_at(BADADDR),
     ext_tid(NO_THREAD), state_bits(0),
     ctx_valid(false), ctx_changed(false), can_change_regs(false), susp(false),
-    ev_handled(false), started(false), is_phys(false), is_stoppable(false)
+    ev_handled(false), started(false), is_stoppable(false)
 {
   PIN_SemaphoreInit(&thr_sem);
   PIN_SemaphoreSet(&thr_sem);
@@ -3057,7 +3159,6 @@ inline void thread_data_t::save_ctx_nolock(const CONTEXT *src_ctx, bool can_chan
   PIN_SaveContext(src_ctx, get_ctx());
   ctx_changed = false;
   ctx_valid = true;
-  is_phys = false;
   can_change_regs = can_change;
 }
 
@@ -3123,12 +3224,12 @@ inline bool thread_data_t::add_thread_areas(pin_meminfo_vec_t *miv)   //lint !e8
     MSG("No valid stack limits for %x\n", ext_tid);
     return false;
   }
-  // add TIB area, suppose the whole page is reserved for the TIB
-  pin_memory_info_t tib_mi(ADDRINT(tibbase),
+  // add TEB area, suppose the whole page is reserved for the TEB
+  pin_memory_info_t teb_mi(ADDRINT(tibbase),
                            ADDRINT(tibbase) + get_mem_page_size(),
                            SEGPERM_READ | SEGPERM_WRITE);
-  snprintf(tib_mi.name, sizeof(tib_mi.name), "TIB[%08X]", ext_tid);
-  add_thread_segment(miv, tib_mi);
+  snprintf(teb_mi.name, sizeof(teb_mi.name), "TEB[%08X]", ext_tid);
+  add_thread_segment(miv, teb_mi);
 
   pin_memory_info_t stk_mi(stack_bottom(), stack_top(),
                            SEGPERM_READ | SEGPERM_WRITE | SEGPERM_EXEC);
@@ -3258,8 +3359,48 @@ inline void thread_data_t::save_phys_ctx(const PHYSICAL_CONTEXT *phys_ctx)
     PIN_SetContextRegval(ctx, REG(regid), v);
   }
   ctx_changed = false;
-  is_phys = true;
   ctx_valid = true;
+}
+
+//--------------------------------------------------------------------------
+// Copy modified registers from the private CONTEXT back to a
+// PHYSICAL_CONTEXT (reverse of save_phys_ctx). Used by internal_excp_cb
+// to apply register modifications before returning EHR_HANDLED.
+inline void thread_data_t::restore_phys_ctx(PHYSICAL_CONTEXT *phys_ctx)
+{
+  CONTEXT *context = get_ctx();
+  PIN_SetPhysicalContextReg(phys_ctx, REG_GAX, PIN_GetContextReg(context, REG_GAX));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_GBX, PIN_GetContextReg(context, REG_GBX));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_GCX, PIN_GetContextReg(context, REG_GCX));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_GDX, PIN_GetContextReg(context, REG_GDX));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_GSI, PIN_GetContextReg(context, REG_GSI));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_GDI, PIN_GetContextReg(context, REG_GDI));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_GBP, PIN_GetContextReg(context, REG_GBP));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_STACK_PTR, PIN_GetContextReg(context, REG_STACK_PTR));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_INST_PTR, PIN_GetContextReg(context, REG_INST_PTR));
+#if defined(PIN_64)
+  PIN_SetPhysicalContextReg(phys_ctx, REG_R8,  PIN_GetContextReg(context, REG_R8));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_R9,  PIN_GetContextReg(context, REG_R9));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_R10, PIN_GetContextReg(context, REG_R10));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_R11, PIN_GetContextReg(context, REG_R11));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_R12, PIN_GetContextReg(context, REG_R12));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_R13, PIN_GetContextReg(context, REG_R13));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_R14, PIN_GetContextReg(context, REG_R14));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_R15, PIN_GetContextReg(context, REG_R15));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_RFLAGS, PIN_GetContextReg(context, REG_RFLAGS));
+#else
+  PIN_SetPhysicalContextReg(phys_ctx, REG_EFLAGS, PIN_GetContextReg(context, REG_EFLAGS));
+#endif
+  PIN_SetPhysicalContextReg(phys_ctx, REG_SEG_CS, PIN_GetContextReg(context, REG_SEG_CS));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_SEG_DS, PIN_GetContextReg(context, REG_SEG_DS));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_SEG_ES, PIN_GetContextReg(context, REG_SEG_ES));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_SEG_FS, PIN_GetContextReg(context, REG_SEG_FS));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_SEG_GS, PIN_GetContextReg(context, REG_SEG_GS));
+  PIN_SetPhysicalContextReg(phys_ctx, REG_SEG_SS, PIN_GetContextReg(context, REG_SEG_SS));
+  FPSTATE fpstate;
+  PIN_GetContextFPState(context, &fpstate);
+  PIN_SetPhysicalContextFPState(phys_ctx, &fpstate);
+  ctx_changed = false;
 }
 
 //--------------------------------------------------------------------------
@@ -3278,12 +3419,11 @@ int thread_data_t::available_regs(int clsmask) const
 //--------------------------------------------------------------------------
 inline bool thread_data_t::change_regval(PINTOOL_REG regno, const UINT8 *regval)
 {
-  if ( !can_change_regs || is_phys )
+  if ( !can_change_regs )
   {
     MSG("Thread %d: can't change register values at this point: "
-        "is_phys=%s, can_change_regs=%s\n",
+        "can_change_regs=%s\n",
         ext_tid,
-        is_phys ? "TRUE" : "FALSE",
         can_change_regs ? "TRUE" : "FALSE");
     return false;
   }
@@ -3296,7 +3436,7 @@ inline bool thread_data_t::change_regval(PINTOOL_REG regno, const UINT8 *regval)
     if ( !REG_is_st(REG(regno)) )
       return false;
     get_context_reg(context, regno, (UINT8 *)old_fpreg_value.byte);
-    memcpy(old_fpreg_value.byte, regval, 8);    //-V512 underflow
+    memcpy(old_fpreg_value.byte, regval, 8);
     regval = old_fpreg_value.byte;
   }
 #ifdef NONSTD_FPTAG_FULL
@@ -3633,7 +3773,7 @@ inline void ev_queue_t::push_front(const pin_local_event_t &ev)
 // send PROCESS_ATTACHED until all threads are reported or timeout (1sec) expired
 inline uint32 get_initial_thread_count()
 {
-  static time_t started = 0;    //-V795 year 2038
+  static time_t started = 0;
   if ( started == 0 )
   {
     time(&started);
@@ -3641,7 +3781,7 @@ inline uint32 get_initial_thread_count()
   }
   else
   {
-    time_t curr;    //-V795 year 2038
+    time_t curr;
     time(&curr);
     if ( curr > started )
       return 0;       // timeout (1sec): return minimal number
@@ -3990,6 +4130,7 @@ inline void bpt_mgr_t::add_rtns(INS ins, ADDRINT ins_addr)
                      IARG_CALL_ORDER, CALL_ORDER_FIRST + 1,
                      IARG_INST_PTR, IARG_CONST_CONTEXT, IARG_END);
   }
+
 }
 
 //--------------------------------------------------------------------------

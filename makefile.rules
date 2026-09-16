@@ -11,6 +11,17 @@ ifeq ($(TARGET),intel64)
 endif
 
 
+# Retain vs_build's optimized builds with symbols, using Pin RT wrappers.
+# The kit has already expanded TOOL_CXXFLAGS; changing *_NOOPT here is too late.
+ifeq ($(TARGET_OS),linux)
+  TOOL_CXXFLAGS += -g
+endif
+ifeq ($(TARGET_OS),windows)
+  TOOL_CXXFLAGS += -Z7
+  TOOL_LDFLAGS += /DEBUG:FULL /PDBALTPATH:%_PDB%
+endif
+
+
 ##############################################################
 #
 # Test targets

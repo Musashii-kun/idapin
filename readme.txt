@@ -31,6 +31,24 @@ From this directory, set PIN_ROOT to the extracted Linux kit:
   make PIN_ROOT="$PIN_ROOT" TARGET=intel64 tools
   make PIN_ROOT="$PIN_ROOT" TARGET=ia32 tools
 
+The convenience script builds both architectures and copies idadbg.so and
+idadbg64.so into the project root, as the older build_linux.sh did:
+
+  ./build_linux.sh
+
+It requires PIN_ROOT as above and matching multilib support for IA-32.
+For only one architecture, use ./build_linux.sh intel64 or ./build_linux.sh ia32.
+Use DEBUG=1 ./build_linux.sh for unoptimized builds. The script can be invoked
+from any directory. It keeps intermediate files in obj-<target>-release/ or
+obj-<target>-debug/ for incremental builds, and only copies libraries after
+all requested builds succeed. Remove these directories when changing kits or
+compilers. A failed build does not replace previously copied libraries.
+
+This branch retains optimized builds with debug symbols by default: -g on
+Linux, and -Z7 plus /DEBUG:FULL on Windows. /PDBALTPATH:%_PDB% keeps the embedded
+Windows PDB reference independent of the build directory. Deprecated-warning
+suppression is no longer needed. No Pin RT compiler/linker wrapper is replaced.
+
 Outputs: obj-intel64/idadbg64.so and obj-ia32/idadbg.so.
 Use DEBUG=1 with a separate OBJDIR (ending in /) for debug builds, for example:
 

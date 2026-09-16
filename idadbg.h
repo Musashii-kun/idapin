@@ -817,7 +817,7 @@ struct idapin_segbase_packet_t: idapin_packet_t
 };
 
 #ifdef _WIN32
-#define USE_PIN_STLPORT (PIN_BUILD_NUMBER >= 76991)
+#define USE_PIN_STLPORT (PIN_PRODUCT_VERSION_MAJOR < 4 && PIN_BUILD_NUMBER >= 76991)
 #else
 #define USE_PIN_STLPORT (PIN_BUILD_NUMBER >= 76991 && PIN_BUILD_NUMBER < 98612)
 #endif

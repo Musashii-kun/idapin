@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <deque>
 #include <map>
+#include <memory>
 #include <set>
 
 #include <stdio.h>
@@ -17,7 +18,13 @@
 #include <assert.h>
 #include <ctype.h>
 
-#ifndef _WIN32
+// Pin 4 provides POSIX sockets on both platforms. Keep native WinSock only
+// for older kits, and never mix native handles with Pin RT descriptors.
+#if defined(_WIN32) && PIN_PRODUCT_VERSION_MAJOR < 4
+#define IDAPIN_NATIVE_WINSOCK
+#endif
+
+#ifndef IDAPIN_NATIVE_WINSOCK
 
 #include <unistd.h>
 #include <sys/socket.h>
@@ -25,7 +32,14 @@
 #include <netinet/in.h>
 #include <netdb.h>
 
-#else
+#endif
+
+#if defined(_WIN32) && PIN_PRODUCT_VERSION_MAJOR >= 4
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows/pinrt_windows.h>
+#elif defined(_WIN32)
 
 namespace WINDOWS
 {
@@ -54,7 +68,7 @@ namespace WINDOWS
 //--------------------------------------------------------------------------
 // Wrappers for OS-depended types/functions
 //--------------------------------------------------------------------------
-#ifdef _WIN32
+#ifdef IDAPIN_NATIVE_WINSOCK
 
 # if _MSC_VER
 #   if defined(PIN_NUMERIC_BUILD) && PIN_NUMERIC_BUILD < 76991 || defined(__LINT__)
@@ -96,7 +110,9 @@ typedef WINDOWS::SOCKET SOCKET;
 #else
 
 #define PIN_SOCKET      int
+#ifndef INVALID_SOCKET
 #define  INVALID_SOCKET -1
+#endif
 #define pin_socket      socket
 #define pin_accept      accept
 #define pin_select      select
@@ -112,6 +128,17 @@ typedef WINDOWS::SOCKET SOCKET;
 #define pin_closesocket close
 
 #endif
+
+//--------------------------------------------------------------------------
+// IDA's protocol uses native OS thread IDs, not Pin 4's virtual IDs.
+inline pin_thid pin_native_tid()
+{
+#if PIN_PRODUCT_VERSION_MAJOR >= 4
+  return PIN_GetNativeTid();
+#else
+  return PIN_GetTid();
+#endif
+}
 
 //--------------------------------------------------------------------------
 // Internal macros/types

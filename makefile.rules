@@ -19,10 +19,9 @@ endif
 
 ###### Place all generic definitions here ######
 
-# This defines tests which run tools of the same name.  This is simply for convenience to avoid
-# defining the test name twice (once in TOOL_ROOTS and again in TEST_ROOTS).
-# Tests defined here should not be defined in TOOL_ROOTS and TEST_ROOTS.
-TEST_TOOL_ROOTS := idadbg$(BITNESS)
+# idadbg needs an IDA protocol client; the kit's generic test recipe would
+# wait forever for a connection. Run tests/smoke.py explicitly instead.
+TOOL_ROOTS := idadbg$(BITNESS)
 
 ##############################################################
 #
@@ -35,15 +34,25 @@ ifdef IDA_OBJDIR
   $(OBJDIR):
 	@mkdir -p 2>/dev/null $(OBJDIR)
 
-  CC := "$(IDA_CC)"
-  CXX := "$(IDA_CXX)"
-  LINKER := "$(IDA_CCL)"
+  # Pin 4 must retain the kit's TOOL_* runtime wrappers. Legacy kits used
+  # CC/CXX/LINKER directly; honor IDA's compiler overrides only there.
+  ifndef TOOL_CXX
+    CC := "$(IDA_CC)"
+    CXX := "$(IDA_CXX)"
+    LINKER := "$(IDA_CCL)"
+  endif
   TOOL_CXXFLAGS += $(IDA_EXTRA_CXXFLAGS)
   TOOL_LDFLAGS += $(IDA_EXTRA_LDFLAGS)
 endif
 # -[
 
+# Pin 4 renamed the tool linker; older kits used LINKER.
+IDAPIN_LINKER = $(if $(TOOL_LINKER),$(TOOL_LINKER),$(LINKER))
+
+# Recompile when either header changes (not just relink).
+$(OBJDIR)idadbg$(OBJ_SUFFIX): idadbg.h idadbg_local.h
+
 # special rule for IDA's 64-bit DLLs (with non-suffixed object file name).
 # (copied form makefile.default.rules).
 $(OBJDIR)idadbg$(BITNESS)$(PINTOOL_SUFFIX): $(OBJDIR)idadbg$(OBJ_SUFFIX) idadbg.h idadbg_local.h
-	$(LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $< $(TOOL_LPATHS) $(TOOL_LIBS)
+	$(IDAPIN_LINKER) $(TOOL_LDFLAGS) $(LINK_EXE)$@ $< $(TOOL_LPATHS) $(TOOL_LIBS)

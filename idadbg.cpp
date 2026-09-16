@@ -1,8 +1,8 @@
 /*
 
     IDA trace: PIN tool to communicate with IDA's debugger
-    Last supported linux version:   3.31-98861
-    Last supported windows version: 3.31-98861
+    Last supported linux version:   4.4-99977
+    Last supported windows version: 4.4-99977
 
 */
 
@@ -61,7 +61,7 @@
 #endif
 
 #if !defined(PIN_NUMERIC_BUILD) || PIN_NUMERIC_BUILD >= 76991
-#ifndef _WIN32
+#if !defined(_WIN32) && PIN_PRODUCT_VERSION_MAJOR < 4
 #include <sys/syscall.h>
 #endif
 
@@ -136,6 +136,9 @@ static VOID ida_pin_listener(VOID *);
 static PIN_SOCKET srv_socket, cli_socket;
 // internal thread identifier
 static PIN_THREAD_UID listener_uid;
+// PIN_ThreadUid() was removed in Pin 4.3. Thread-local identity also avoids
+// confusing a recycled THREADID with the listener after it has exited.
+static thread_local bool in_listener_thread = false;
 // this lock prevents listener thread to start serving of requests
 static PIN_LOCK start_listener_lock;
 // flag: has internal listener thread really started?
@@ -775,14 +778,14 @@ inline void get_context_regs(const CONTEXT *ctx, idapin_registers_t *regs)
   regs->esp = (ADDRINT)PIN_GetContextReg(ctx, REG_STACK_PTR);
   regs->eip = (ADDRINT)PIN_GetContextReg(ctx, REG_INST_PTR);
 #if defined(PIN_64)
-  regs->r8  = (ADDRINT)PIN_GetContextReg(ctx, REG_R8);
-  regs->r9  = (ADDRINT)PIN_GetContextReg(ctx, REG_R9);
-  regs->r10 = (ADDRINT)PIN_GetContextReg(ctx, REG_R10);
-  regs->r11 = (ADDRINT)PIN_GetContextReg(ctx, REG_R11);
-  regs->r12 = (ADDRINT)PIN_GetContextReg(ctx, REG_R12);
-  regs->r13 = (ADDRINT)PIN_GetContextReg(ctx, REG_R13);
-  regs->r14 = (ADDRINT)PIN_GetContextReg(ctx, REG_R14);
-  regs->r15 = (ADDRINT)PIN_GetContextReg(ctx, REG_R15);
+  regs->r8  = (ADDRINT)PIN_GetContextReg(ctx, LEVEL_BASE::REG_R8);
+  regs->r9  = (ADDRINT)PIN_GetContextReg(ctx, LEVEL_BASE::REG_R9);
+  regs->r10 = (ADDRINT)PIN_GetContextReg(ctx, LEVEL_BASE::REG_R10);
+  regs->r11 = (ADDRINT)PIN_GetContextReg(ctx, LEVEL_BASE::REG_R11);
+  regs->r12 = (ADDRINT)PIN_GetContextReg(ctx, LEVEL_BASE::REG_R12);
+  regs->r13 = (ADDRINT)PIN_GetContextReg(ctx, LEVEL_BASE::REG_R13);
+  regs->r14 = (ADDRINT)PIN_GetContextReg(ctx, LEVEL_BASE::REG_R14);
+  regs->r15 = (ADDRINT)PIN_GetContextReg(ctx, LEVEL_BASE::REG_R15);
 
   regs->eflags = (ADDRINT)PIN_GetContextReg(ctx, REG_RFLAGS);
 #else
@@ -809,14 +812,14 @@ inline void get_phys_context_regs(const PHYSICAL_CONTEXT *ctx, idapin_registers_
   regs->esp = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_STACK_PTR);
   regs->eip = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_INST_PTR);
 #if defined(PIN_64)
-  regs->r8  = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_R8);
-  regs->r9  = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_R9);
-  regs->r10 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_R10);
-  regs->r11 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_R11);
-  regs->r12 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_R12);
-  regs->r13 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_R13);
-  regs->r14 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_R14);
-  regs->r15 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_R15);
+  regs->r8  = (ADDRINT)PIN_GetPhysicalContextReg(ctx, LEVEL_BASE::REG_R8);
+  regs->r9  = (ADDRINT)PIN_GetPhysicalContextReg(ctx, LEVEL_BASE::REG_R9);
+  regs->r10 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, LEVEL_BASE::REG_R10);
+  regs->r11 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, LEVEL_BASE::REG_R11);
+  regs->r12 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, LEVEL_BASE::REG_R12);
+  regs->r13 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, LEVEL_BASE::REG_R13);
+  regs->r14 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, LEVEL_BASE::REG_R14);
+  regs->r15 = (ADDRINT)PIN_GetPhysicalContextReg(ctx, LEVEL_BASE::REG_R15);
 
   regs->eflags = (ADDRINT)PIN_GetPhysicalContextReg(ctx, REG_RFLAGS);
 #else
@@ -1168,7 +1171,7 @@ inline void error_msg(const char *msg)    //lint !e715 'msg' not subsequently re
   MSG("%s: %s\n", msg, strerror(errno));
 }
 
-#ifdef _WIN32
+#ifdef IDAPIN_NATIVE_WINSOCK
 static int (WSAAPI *p_WSAStartup)(WINDOWS::WORD, WINDOWS::WSADATA *);
 static int (WSAAPI *p_WSAGetLastError)(void);
 static WINDOWS::SOCKET (WSAAPI *p_socket)(int af, int type, int protocol);
@@ -1187,11 +1190,11 @@ static int (WSAAPI *p__WSAFDIsSet)(WINDOWS::SOCKET fd, fd_set *);
 #endif
 
 //--------------------------------------------------------------------------
-static void check_network_error(int fd, ssize_t ret, const char *from_where)  //lint !e715 'from_where' not subsequently referenced
+static void check_network_error(PIN_SOCKET fd, ssize_t ret, const char *from_where)  //lint !e715 'from_where' not subsequently referenced
 {
   if ( ret == -1 )
   {
-#ifdef _WIN32
+#ifdef IDAPIN_NATIVE_WINSOCK
     int err = p_WSAGetLastError();
     bool timeout = err == WSAETIMEDOUT;
 #else
@@ -1216,11 +1219,11 @@ static ssize_t pin_recv(PIN_SOCKET fd, void *buf, size_t n, const char *from_whe
   while ( n > 0 )
   {
     ssize_t ret;
-#ifdef _WIN32
+#ifdef IDAPIN_NATIVE_WINSOCK
     ret = p_recv(fd, bufp, (int)n, 0);
 #else
     do
-      ret = read(fd, bufp, n);
+      ret = recv(fd, bufp, n, 0);
     while ( ret == -1 && errno == EINTR );
 #endif
     check_network_error(fd, ret, from_where);
@@ -1240,7 +1243,7 @@ inline bool pin_sockwait(int milisec)
   pin_timeval tv = { 0, milisec * 1000 };
   FD_ZERO(&rdset);
   FD_SET(cli_socket, &rdset);
-#ifdef _WIN32
+#ifdef IDAPIN_NATIVE_WINSOCK
   return pin_select(cli_socket+1, &rdset, nullptr, nullptr, &tv) > 0;
 #else
   int res;
@@ -1255,7 +1258,7 @@ inline bool pin_sockwait(int milisec)
 static ssize_t pin_send(const void *buf, size_t n, const char *from_where)
 {
   ssize_t ret;
-#ifdef _WIN32
+#ifdef IDAPIN_NATIVE_WINSOCK
   ret = p_send(cli_socket, (const char *)buf, (int)n, 0);
 #else
   do
@@ -1285,7 +1288,7 @@ static bool accept_conn()
   struct pin_sockaddr_in sa;
   pin_socklen_t clilen = sizeof(sa);
   //lint -e565 tag 'sockaddr' not previously seen, assumed file-level scope
-  cli_socket = pin_accept(srv_socket, ((struct sockaddr *)&sa), &clilen);
+  cli_socket = pin_accept(srv_socket, ((pin_sockaddr *)&sa), &clilen);
   if ( cli_socket == INVALID_SOCKET )
     return false;
   // accepted, client should send 'hello' packet, read it
@@ -1359,7 +1362,7 @@ static int optval;
 static bool set_sockopt(PIN_SOCKET sock, int level, int optname, int val)
 {
   optval = val;
-#if defined(_WIN32) || defined(PIN_NUMERIC_BUILD) && PIN_NUMERIC_BUILD < 76991
+#if PIN_PRODUCT_VERSION_MAJOR >= 4 || defined(_WIN32) || defined(PIN_NUMERIC_BUILD) && PIN_NUMERIC_BUILD < 76991
   return pin_setsockopt(sock, level, optname, &optval, sizeof(optval)) == 0;
 #else
   // setsockopt is not implemented in PinCRT, fortunately syscall() is, use it
@@ -1379,7 +1382,7 @@ static bool init_socket(void)
 {
   // Since PIN #71313 we cannot use WinSock library (hope in the future it will be
   // implemented in PinCRT like Linux sockets), now load library ws2_32.dll manualy
-#ifdef _WIN32
+#ifdef IDAPIN_NATIVE_WINSOCK
   WINDOWS::HMODULE h = WINDOWS::LoadLibrary(TEXT("ws2_32.dll"));
   if ( h == nullptr )
   {
@@ -1430,7 +1433,7 @@ static bool init_socket(void)
 #endif
 
   int portno = knob_ida_port;
-  srv_socket = pin_socket(AF_INET, SOCK_STREAM, 0);
+  srv_socket = pin_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if ( srv_socket == (PIN_SOCKET)-1 )
   {
     error_msg("socket");
@@ -1797,6 +1800,7 @@ static bool serve_sync(void)
 // separate internal thread for asynchronous IDA requests serving
 static VOID ida_pin_listener(VOID *)
 {
+  in_listener_thread = true;
   MSG("Listener started (thread = %d)\n", thread_data_t::get_thread_id());
 
   {
@@ -1839,6 +1843,7 @@ static VOID ida_pin_listener(VOID *)
       }
     }
   }
+  in_listener_thread = false;
   MSG("Listener exited\n");
   listener_uid = INVALID_PIN_THREAD_UID;
 }
@@ -2366,11 +2371,13 @@ static ssize_t handle_write_memory(ADDRINT ea, pin_size_t size)
 //--------------------------------------------------------------------------
 static bool handle_read_trace(void)
 {
-  idatrace_events_t trc_events;
-  instrumenter_t::get_trace_events(&trc_events);
-  trc_events.code = PTT_ACK;
-  ssize_t bytes = pin_send(&trc_events, sizeof(trc_events), __FUNCTION__);
-  return bytes == sizeof(trc_events);
+  // This packet is over 200 KiB. Pin 4's internal-thread stack cannot hold
+  // it (inlining can put it on the stack even for unrelated packet types).
+  std::unique_ptr<idatrace_events_t> trc_events(new idatrace_events_t());
+  instrumenter_t::get_trace_events(trc_events.get());
+  trc_events->code = PTT_ACK;
+  ssize_t bytes = pin_send(trc_events.get(), sizeof(*trc_events), __FUNCTION__);
+  return bytes == sizeof(*trc_events);
 }
 
 //--------------------------------------------------------------------------
@@ -2911,7 +2918,7 @@ static bool read_handle_packet(idapin_packet_t *res)
     // every 10ms try to send event
     while ( !events.send_event(nullptr) )
     {
-      if ( listener_uid == PIN_ThreadUid() && PIN_IsProcessExiting() )
+      if ( in_listener_thread && PIN_IsProcessExiting() )
         return false;
       if ( pin_sockwait(10) )
         break;
@@ -3318,14 +3325,14 @@ inline void thread_data_t::save_phys_ctx(const PHYSICAL_CONTEXT *phys_ctx)
   set_ctx_reg(REG_STACK_PTR, PIN_GetPhysicalContextReg(phys_ctx, REG_STACK_PTR));
   set_ctx_reg(REG_INST_PTR, PIN_GetPhysicalContextReg(phys_ctx, REG_INST_PTR));
 #if defined(PIN_64)
-  set_ctx_reg(REG_R8,  PIN_GetPhysicalContextReg(phys_ctx, REG_R8));
-  set_ctx_reg(REG_R9,  PIN_GetPhysicalContextReg(phys_ctx, REG_R9));
-  set_ctx_reg(REG_R10, PIN_GetPhysicalContextReg(phys_ctx, REG_R10));
-  set_ctx_reg(REG_R11, PIN_GetPhysicalContextReg(phys_ctx, REG_R11));
-  set_ctx_reg(REG_R12, PIN_GetPhysicalContextReg(phys_ctx, REG_R12));
-  set_ctx_reg(REG_R13, PIN_GetPhysicalContextReg(phys_ctx, REG_R13));
-  set_ctx_reg(REG_R14, PIN_GetPhysicalContextReg(phys_ctx, REG_R14));
-  set_ctx_reg(REG_R15, PIN_GetPhysicalContextReg(phys_ctx, REG_R15));
+  set_ctx_reg(LEVEL_BASE::REG_R8,  PIN_GetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R8));
+  set_ctx_reg(LEVEL_BASE::REG_R9,  PIN_GetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R9));
+  set_ctx_reg(LEVEL_BASE::REG_R10, PIN_GetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R10));
+  set_ctx_reg(LEVEL_BASE::REG_R11, PIN_GetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R11));
+  set_ctx_reg(LEVEL_BASE::REG_R12, PIN_GetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R12));
+  set_ctx_reg(LEVEL_BASE::REG_R13, PIN_GetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R13));
+  set_ctx_reg(LEVEL_BASE::REG_R14, PIN_GetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R14));
+  set_ctx_reg(LEVEL_BASE::REG_R15, PIN_GetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R15));
 
   set_ctx_reg(REG_RFLAGS, PIN_GetPhysicalContextReg(phys_ctx, REG_RFLAGS));
 #else
@@ -3379,14 +3386,14 @@ inline void thread_data_t::restore_phys_ctx(PHYSICAL_CONTEXT *phys_ctx)
   PIN_SetPhysicalContextReg(phys_ctx, REG_STACK_PTR, PIN_GetContextReg(context, REG_STACK_PTR));
   PIN_SetPhysicalContextReg(phys_ctx, REG_INST_PTR, PIN_GetContextReg(context, REG_INST_PTR));
 #if defined(PIN_64)
-  PIN_SetPhysicalContextReg(phys_ctx, REG_R8,  PIN_GetContextReg(context, REG_R8));
-  PIN_SetPhysicalContextReg(phys_ctx, REG_R9,  PIN_GetContextReg(context, REG_R9));
-  PIN_SetPhysicalContextReg(phys_ctx, REG_R10, PIN_GetContextReg(context, REG_R10));
-  PIN_SetPhysicalContextReg(phys_ctx, REG_R11, PIN_GetContextReg(context, REG_R11));
-  PIN_SetPhysicalContextReg(phys_ctx, REG_R12, PIN_GetContextReg(context, REG_R12));
-  PIN_SetPhysicalContextReg(phys_ctx, REG_R13, PIN_GetContextReg(context, REG_R13));
-  PIN_SetPhysicalContextReg(phys_ctx, REG_R14, PIN_GetContextReg(context, REG_R14));
-  PIN_SetPhysicalContextReg(phys_ctx, REG_R15, PIN_GetContextReg(context, REG_R15));
+  PIN_SetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R8,  PIN_GetContextReg(context, LEVEL_BASE::REG_R8));
+  PIN_SetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R9,  PIN_GetContextReg(context, LEVEL_BASE::REG_R9));
+  PIN_SetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R10, PIN_GetContextReg(context, LEVEL_BASE::REG_R10));
+  PIN_SetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R11, PIN_GetContextReg(context, LEVEL_BASE::REG_R11));
+  PIN_SetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R12, PIN_GetContextReg(context, LEVEL_BASE::REG_R12));
+  PIN_SetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R13, PIN_GetContextReg(context, LEVEL_BASE::REG_R13));
+  PIN_SetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R14, PIN_GetContextReg(context, LEVEL_BASE::REG_R14));
+  PIN_SetPhysicalContextReg(phys_ctx, LEVEL_BASE::REG_R15, PIN_GetContextReg(context, LEVEL_BASE::REG_R15));
   PIN_SetPhysicalContextReg(phys_ctx, REG_RFLAGS, PIN_GetContextReg(context, REG_RFLAGS));
 #else
   PIN_SetPhysicalContextReg(phys_ctx, REG_EFLAGS, PIN_GetContextReg(context, REG_EFLAGS));
@@ -3608,7 +3615,7 @@ inline void thread_data_t::try_init_ext_tid(THREADID local_tid)
   {
     if ( local_tid == get_thread_id() )
     {
-      set_ext_tid(local_tid, PIN_GetTid());
+      set_ext_tid(local_tid, pin_native_tid());
       DEBUG(2, "init ext TID for %d: %d/%X\n", local_tid, ext_tid, ext_tid);
     }
     else
@@ -4748,7 +4755,7 @@ inline void instrumenter_t::store_trace_entry(
   if ( tracebuf_is_full() )
     prepare_and_wait_trace_flush();
 
-  trc_element_t trc(PIN_GetTid(), ea, tev_type);
+  trc_element_t trc(pin_native_tid(), ea, tev_type);
   if ( instrumenter_t::tracing_registers && ctx != nullptr )
     get_context_regs(ctx, &trc.regs);
 
@@ -5018,14 +5025,14 @@ inline PINTOOL_REG regidx_pintool2pin(pin_regid_t pintool_reg)
     case PINREG_ESP: return REG_STACK_PTR;
     case PINREG_EIP: return REG_INST_PTR;
 #ifdef PIN_64
-    case PINREG64_R8 : return REG_R8;
-    case PINREG64_R9 : return REG_R9;
-    case PINREG64_R10: return REG_R10;
-    case PINREG64_R11: return REG_R11;
-    case PINREG64_R12: return REG_R12;
-    case PINREG64_R13: return REG_R13;
-    case PINREG64_R14: return REG_R14;
-    case PINREG64_R15: return REG_R15;
+    case PINREG64_R8 : return LEVEL_BASE::REG_R8;
+    case PINREG64_R9 : return LEVEL_BASE::REG_R9;
+    case PINREG64_R10: return LEVEL_BASE::REG_R10;
+    case PINREG64_R11: return LEVEL_BASE::REG_R11;
+    case PINREG64_R12: return LEVEL_BASE::REG_R12;
+    case PINREG64_R13: return LEVEL_BASE::REG_R13;
+    case PINREG64_R14: return LEVEL_BASE::REG_R14;
+    case PINREG64_R15: return LEVEL_BASE::REG_R15;
 
     case PINREG_EFLAGS: return REG_RFLAGS;
 #else
@@ -5121,14 +5128,14 @@ inline const char *regname_by_idx(pin_regid_t pintool_reg)
     case PINREG_ESP: return "REG_STACK_PTR";
     case PINREG_EIP: return "REG_INST_PTR";
 #ifdef PIN_64
-    case PINREG64_R8 : return "REG_R8";
-    case PINREG64_R9 : return "REG_R9";
-    case PINREG64_R10: return "REG_R10";
-    case PINREG64_R11: return "REG_R11";
-    case PINREG64_R12: return "REG_R12";
-    case PINREG64_R13: return "REG_R13";
-    case PINREG64_R14: return "REG_R14";
-    case PINREG64_R15: return "REG_R15";
+    case PINREG64_R8 : return "LEVEL_BASE::REG_R8";
+    case PINREG64_R9 : return "LEVEL_BASE::REG_R9";
+    case PINREG64_R10: return "LEVEL_BASE::REG_R10";
+    case PINREG64_R11: return "LEVEL_BASE::REG_R11";
+    case PINREG64_R12: return "LEVEL_BASE::REG_R12";
+    case PINREG64_R13: return "LEVEL_BASE::REG_R13";
+    case PINREG64_R14: return "LEVEL_BASE::REG_R14";
+    case PINREG64_R15: return "LEVEL_BASE::REG_R15";
 #endif
     case PINREG_EFLAGS: return "REG_EFLAGS";
     // xmm registers
